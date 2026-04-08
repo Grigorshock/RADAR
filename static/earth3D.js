@@ -1,0 +1,245 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'https://unpkg.com/three@0.128.0/examples/jsm/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 0, 3);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.zoomSpeed = 1.2;
+
+const textureLoader = new THREE.TextureLoader();
+const earthMap = textureLoader.load('https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg');
+
+const geometry = new THREE.SphereGeometry(1, 128, 128);
+const material = new THREE.MeshStandardMaterial({ map: earthMap });
+const earth = new THREE.Mesh(geometry, material);
+scene.add(earth);
+
+const starGeometry = new THREE.BufferGeometry();
+const starCount = 2000;
+const starPositions = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount; i++) {
+    starPositions[i*3] = (Math.random() - 0.5) * 2000;
+    starPositions[i*3+1] = (Math.random() - 0.5) * 2000;
+    starPositions[i*3+2] = (Math.random() - 0.5) * 2000;
+}
+starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+const starMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 0.5 });
+const stars = new THREE.Points(starGeometry, starMaterial);
+scene.add(stars);
+
+const ambientLight = new THREE.AmbientLight(0x333333);
+scene.add(ambientLight);
+const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+directionalLight.position.set(5, 3, 5);
+scene.add(directionalLight);
+const backLight = new THREE.DirectionalLight(0x444444, 0.5);
+backLight.position.set(-3, -1, -4);
+scene.add(backLight);
+
+let planeGroup = new THREE.Group();
+scene.add(planeGroup);
+let aircraftsList = [];
+let currentFlightData = new Map();
+
+function latLonToXYZ(lat, lon, radius) {
+    const phi = (90 - lat) * Math.PI / 180;
+    const theta = -(lon * Math.PI / 180);
+    const x = radius * Math.sin(phi) * Math.cos(theta);
+    const y = radius * Math.cos(phi);
+    const z = radius * Math.sin(phi) * Math.sin(theta);
+    return new THREE.Vector3(x, y, z);
+}
+
+function createAircraft() {
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0.02);
+    shape.lineTo(0.015, -0.01);
+    shape.lineTo(-0.015, -0.01);
+    shape.lineTo(0, 0.02);
+
+    const geometry = new THREE.ShapeGeometry(shape);
+    const material = new THREE.MeshStandardMaterial({ color: 0xff6600 });
+    const triangle = new THREE.Mesh(geometry, material);
+    return triangle;
+}
+
+function updateAircraftsScale() {
+    const distance = camera.position.length();
+    let scale = 0.05 * Math.pow(distance / 1.5, 2);
+    scale = Math.min(0.6, Math.max(0.003, scale));
+
+    aircraftsList.forEach(aircraft => {
+        aircraft.scale.set(scale, scale, scale);
+    });
+
+    const zoomPercent = Math.round((3 / distance) * 100);
+    document.getElementById('zoom-info').innerHTML = `Приближение: ${zoomPercent}% | Размер: ${(scale * 100).toFixed(1)}px`;
+}
+
+window.showInfoPanel = function(flightInfo, callsign) {
+    const panel = document.getElementById('info-panel');
+
+    const altitudeFeet = flightInfo.altitude || 0;
+    const altitudeKm = (altitudeFeet * 0.3048 / 1000).toFixed(1);
+    const speedKnots = flightInfo.velocity || 0;
+    const speedKmh = (speedKnots * 1.852).toFixed(0);
+    const heading = Math.round(flightInfo.heading || 0);
+    const lat = flightInfo.latitude?.toFixed(4) || 'Н/Д';
+    const lon = flightInfo.longitude?.toFixed(4) || 'Н/Д';
+
+    panel.innerHTML = `
+        <span class="close" onclick="hideInfoPanel()">✕</span>
+        <h3>${callsign || flightInfo.callsign || 'Неизвестный рейс'}</h3>
+        <hr>
+        <p><span class="info-label">ICAO24:</span> ${flightInfo.icao24 || 'Н/Д'}</p>
+        <p><span class="info-label">Страна:</span> ${flightInfo.origin_country || 'Н/Д'}</p>
+        <p><span class="info-label">Координаты:</span><br> ${lat}°, ${lon}°</p>
+        <p><span class="info-label">Высота:</span> ${altitudeKm} км (${Math.round(altitudeFeet)} футов)</p>
+        <p><span class="info-label">Скорость:</span> ${speedKmh} км/ч (${Math.round(speedKnots)} узлов)</p>
+        <p><span class="info-label">Курс:</span> ${heading}°</p>
+    `;
+
+    panel.classList.add('show');
+}
+
+window.hideInfoPanel = function() {
+    const panel = document.getElementById('info-panel');
+    panel.classList.remove('show');
+}
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+function onClick(event) {
+    mouse.x = (event.clientX / renderer.domElement.clientWidth) * 2 - 1;
+    mouse.y = -(event.clientY / renderer.domElement.clientHeight) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObjects(planeGroup.children, true);
+
+    if (intersects.length > 0) {
+        let clickedObject = intersects[0].object;
+        while (clickedObject.parent !== planeGroup && clickedObject.parent !== null) {
+            clickedObject = clickedObject.parent;
+        }
+
+        const icao24 = clickedObject.userData?.icao24;
+        const callsign = clickedObject.userData?.callsign;
+
+        if (icao24) {
+            const flightInfo = currentFlightData.get(icao24);
+            if (flightInfo) {
+                showInfoPanel(flightInfo, callsign);
+            } else {
+                const panel = document.getElementById('info-panel');
+                panel.innerHTML = `
+                    <span class="close" onclick="hideInfoPanel()">✕</span>
+                    <h3>${callsign || 'Неизвестный рейс'}</h3>
+                    <hr>
+                    <p><span class="info-label">ICAO24:</span> ${icao24}</p>
+                    <p><span class="info-label">Данные:</span> Временная недоступность</p>
+                `;
+                panel.classList.add('show');
+            }
+        }
+    }
+}
+
+async function updateAircrafts() {
+    try {
+        const response = await fetch('/api/flights');
+        const data = await response.json();
+
+        const states = Array.isArray(data) ? data : [];
+
+        const statusDiv = document.getElementById('status');
+        statusDiv.innerHTML = `Самолётов: ${states.length}`;
+
+        currentFlightData.clear();
+        states.forEach(state => {
+            const icao24 = state[0];
+            if (icao24) {
+                currentFlightData.set(icao24, {
+                    icao24: icao24,
+                    callsign: state[1] || 'Н/Д',
+                    origin_country: state[2] || 'Н/Д',
+                    longitude: state[5],
+                    latitude: state[6],
+                    altitude: state[7],
+                    velocity: state[9],
+                    heading: state[10]
+                });
+            }
+        });
+
+        while(planeGroup.children.length > 0) {
+            planeGroup.remove(planeGroup.children[0]);
+        }
+        aircraftsList = [];
+
+        states.forEach(state => {
+            const lon = state[5];
+            const lat = state[6];
+            const icao24 = state[0];
+            const callsign = state[1];
+
+            if (lon !== null && lat !== null && icao24) {
+                const pos = latLonToXYZ(lat, lon, 1.01);
+                const aircraft = createAircraft();
+                aircraft.position.copy(pos);
+                aircraft.lookAt(pos.clone().multiplyScalar(2));
+
+                aircraft.userData = {
+                    icao24: icao24,
+                    callsign: callsign || '???'
+                };
+
+                planeGroup.add(aircraft);
+                aircraftsList.push(aircraft);
+            }
+        });
+
+        updateAircraftsScale();
+
+    } catch (error) {
+        console.error('Ошибка:', error);
+        document.getElementById('status').innerHTML = 'Ошибка подключения к серверу';
+    }
+}
+
+let lastUpdate = 0;
+const UPDATE_INTERVAL = 10000;
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    const now = Date.now();
+    if (now - lastUpdate > UPDATE_INTERVAL) {
+        updateAircrafts();
+        lastUpdate = now;
+    }
+
+    updateAircraftsScale();
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+updateAircrafts();
+animate();
+
+window.addEventListener('click', onClick, false);
+window.addEventListener('resize', onWindowResize, false);
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
