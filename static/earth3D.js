@@ -110,7 +110,7 @@ let airportGroup = new THREE.Group();
 scene.add(airportGroup);
 
 function createAirportMarker(lat, lon, name, code, city, country) {
-    const pos = latLonToXYZ(lat, lon, 1.005);
+    const pos = latLonToXYZ(lat, lon, 1.004);
     const sphereGeometry = new THREE.SphereGeometry(0.008, 16, 16);
     const sphereMaterial = new THREE.MeshStandardMaterial({
         color: 0x3399ff,
@@ -156,15 +156,15 @@ function addAirports() {
         );
         airportGroup.add(marker);
     });
-    console.log(`Добавлено ${airports.length} аэропортов`);
+    console.log(`Добавлено {airports.length} аэропортов`);
 }
 
 function updateAirportsScale() {
     const distance = camera.position.length();
     let scale = 0.05 * Math.pow(distance / 1.5, 2);
-    scale = Math.min(0.6, Math.max(0.003, scale));
+    scale = Math.min(0.2, Math.max(0.1, scale));
 
-    const airportScale = scale * 1.5;
+    const airportScale = scale * 2;
 
     airportGroup.children.forEach(marker => {
         marker.scale.set(airportScale, airportScale, airportScale);
@@ -196,7 +196,7 @@ function createAircraft() {
 function updateAircraftsScale() {
     const distance = camera.position.length();
     let scale = 0.05 * Math.pow(distance / 1.5, 2);
-    scale = Math.min(0.6, Math.max(0.003, scale));
+    scale = Math.min(0.2, Math.max(0.08, scale));
 
     aircraftsList.forEach(aircraft => {
         aircraft.scale.set(scale, scale, scale);
@@ -347,7 +347,7 @@ async function updateAircrafts() {
             const callsign = state[1];
 
             if (lon !== null && lat !== null && icao24) {
-                const pos = latLonToXYZ(lat, lon, 1.01);
+                const pos = latLonToXYZ(lat, lon, 1.003);
                 const aircraft = createAircraft();
                 aircraft.position.copy(pos);
                 aircraft.lookAt(pos.clone().multiplyScalar(2));
@@ -399,3 +399,180 @@ function onWindowResize() {
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
+const tooltip = document.createElement('div');
+tooltip.style.position = 'fixed';
+tooltip.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
+tooltip.style.color = '#ffaa00';
+tooltip.style.padding = '8px 12px';
+tooltip.style.borderRadius = '8px';
+tooltip.style.fontSize = '12px';
+tooltip.style.fontFamily = 'monospace';
+tooltip.style.border = '2px solid #ff6600';
+tooltip.style.borderRadius = '5px';
+tooltip.style.pointerEvents = 'none';
+tooltip.style.zIndex = '1000';
+tooltip.style.whiteSpace = 'nowrap';
+tooltip.style.boxShadow = '0 0 20px rgba(255, 102, 0, 0.3)';
+tooltip.style.backdropFilter = 'blur(5px)';
+tooltip.style.fontWeight = 'bold';
+tooltip.style.display = 'none';
+document.body.appendChild(tooltip);
+
+let hoveredObjectV3 = null;
+let outlineObjects = new Map();
+
+function addOutline(object) {
+    if (!object || outlineObjects.has(object)) return;
+
+    outlineObjects.set(object, {
+        material: object.material,
+        scale: object.scale.clone(),
+        color: object.material ? object.material.color.getHex() : null
+    });
+
+    let outlineGeometry;
+    const boundingBox = new THREE.Box3().setFromObject(object);
+    const size = boundingBox.getSize(new THREE.Vector3());
+    const center = boundingBox.getCenter(new THREE.Vector3());
+
+    const edgesGeometry = new THREE.BoxGeometry(size.x * 1.2, size.y * 1.2, size.z * 1.2);
+    const edges = new THREE.EdgesGeometry(edgesGeometry);
+    const outlineMaterial = new THREE.LineBasicMaterial({ color: 0xff6600, linewidth: 2 });
+    const wireframe = new THREE.LineSegments(edges, outlineMaterial);
+
+    wireframe.position.copy(center);
+    wireframe.position.sub(object.position);
+    wireframe.position.multiplyScalar(1);
+
+    object.add(wireframe);
+    object.userData.outline = wireframe;
+
+    if (object.material) {
+        object.material.color.setHex(0xff8844);
+        object.material.emissiveIntensity = 0.2;
+    }
+}
+
+function removeOutline(object) {
+    if (object && outlineObjects.has(object)) {
+        if (object.userData.outline) {
+            object.remove(object.userData.outline);
+            object.userData.outline = null;
+        }
+
+        const original = outlineObjects.get(object);
+        if (original.material && object.material) {
+            if (original.color) {
+                object.material.color.setHex(original.color);
+            }
+            object.material.emissiveIntensity = 0;
+        }
+
+        outlineObjects.delete(object);
+    }
+}
+
+function getObjectInfo(object) {
+    let aircraftObj = object;
+    while (aircraftObj && aircraftObj.parent !== planeGroup && aircraftObj.parent !== null) {
+        aircraftObj = aircraftObj.parent;
+    }
+
+    if (aircraftObj && aircraftObj.userData && aircraftObj.userData.icao24) {
+        const flightData = currentFlightData.get(aircraftObj.userData.icao24);
+        if (flightData) {
+            return {
+                type: 'aircraft',
+                title: flightData.callsign || aircraftObj.userData.callsign || 'Неизвестный рейс',
+                details: `ICAO: ${flightData.icao24}<br>Страна: ${flightData.origin_country || 'Н/Д'}<br>Высота: ${Math.round(flightData.altitude || 0)} футов`
+            };
+        }
+        return {
+            type: 'aircraft',
+            title: aircraftObj.userData.callsign || 'Неизвестный рейс',
+            details: `ICAO: ${aircraftObj.userData.icao24}`
+        };
+    }
+
+    let airportObj = object;
+    while (airportObj && airportObj.parent !== airportGroup && airportObj.parent !== null) {
+        airportObj = airportObj.parent;
+    }
+
+    if (airportObj && airportObj.userData && airportObj.userData.type === 'airport') {
+        return {
+            type: 'airport',
+            title: airportObj.userData.name,
+            details: `${airportObj.userData.city}, ${airportObj.userData.country}<br>Код: ${airportObj.userData.code}`
+        };
+    }
+
+    return null;
+}
+
+function updateTooltipPosition(event, info) {
+    tooltip.style.left = (event.clientX + 15) + 'px';
+    tooltip.style.top = (event.clientY + 15) + 'px';
+
+    let icon = info.type === 'aircraft' ? '✈️' : '🛬';
+    tooltip.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 20px;">${icon}</span>
+            <div>
+                <div style="color: #ffaa00; font-weight: bold;">${info.title}</div>
+                <div style="color: #ccc; font-size: 10px; margin-top: 4px;">${info.details}</div>
+            </div>
+        </div>
+    `;
+    tooltip.style.display = 'block';
+}
+
+function onMouseMoveV3(event) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+
+    const planeIntersects = raycaster.intersectObjects(planeGroup.children, true);
+    const airportIntersects = raycaster.intersectObjects(airportGroup.children, true);
+
+    let hoveredObject = null;
+    let objectInfo = null;
+
+    if (planeIntersects.length > 0) {
+        hoveredObject = planeIntersects[0].object;
+        objectInfo = getObjectInfo(hoveredObject);
+    } else if (airportIntersects.length > 0) {
+        hoveredObject = airportIntersects[0].object;
+        objectInfo = getObjectInfo(hoveredObject);
+    }
+
+    if (hoveredObject && objectInfo) {
+        if (hoveredObjectV3 !== hoveredObject) {
+            if (hoveredObjectV3) {
+                removeOutline(hoveredObjectV3);
+            }
+            addOutline(hoveredObject);
+            hoveredObjectV3 = hoveredObject;
+        }
+        updateTooltipPosition(event, objectInfo);
+        renderer.domElement.style.cursor = 'pointer';
+    } else {
+        if (hoveredObjectV3) {
+            removeOutline(hoveredObjectV3);
+            hoveredObjectV3 = null;
+        }
+        tooltip.style.display = 'none';
+        renderer.domElement.style.cursor = 'default';
+    }
+}
+
+window.addEventListener('mousemove', onMouseMoveV3, false);
+
+window.addEventListener('beforeunload', () => {
+    if (hoveredObjectV3) {
+        removeOutline(hoveredObjectV3);
+    }
+    tooltip.remove();
+});
