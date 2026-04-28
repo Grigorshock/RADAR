@@ -206,7 +206,6 @@ function updateAircraftsScale() {
 
     const zoomPercent = Math.round((3 / distance) * 100);
     const clampedZoom = Math.min(250, Math.max(38, zoomPercent));
-    document.getElementById('zoom-info').innerHTML = `Приближение: ${clampedZoom}% | Размер объектов: ${(scale * 100).toFixed(1)}px`;
 }
 
 window.showInfoPanel = function(flightInfo, callsign) {
@@ -575,4 +574,141 @@ window.addEventListener('beforeunload', () => {
         removeOutline(hoveredObjectV3);
     }
     tooltip.remove();
+});
+class SimpleChat {
+    constructor() {
+        this.widget = document.getElementById('chat-widget');
+        this.messagesDiv = document.getElementById('chat-messages');
+        this.input = document.getElementById('chat-input');
+        this.sendBtn = document.getElementById('send-btn');
+        this.minimizeBtn = document.getElementById('minimize-chat');
+        this.statusDot = document.getElementById('chat-status-dot');
+
+        this.history = [];
+        this.isMinimized = true;
+        this.isTyping = false;
+
+        this.init();
+    }
+
+    init() {
+        this.sendBtn.onclick = () => this.send();
+        this.input.onkeypress = (e) => { if (e.key === 'Enter') this.send(); };
+        this.minimizeBtn.onclick = () => this.toggle();
+
+        this.checkStatus();
+        setInterval(() => this.checkStatus(), 30000);
+    }
+
+    async checkStatus() {
+        try {
+            const res = await fetch('/api/support/status');
+            const data = await res.json();
+
+            if (data.status === 'ok' && data.configured) {
+                this.statusDot.className = 'status-dot';
+                this.input.disabled = false;
+                this.sendBtn.disabled = false;
+            } else {
+                this.statusDot.className = 'status-dot error';
+                this.input.disabled = true;
+                this.sendBtn.disabled = true;
+                this.addMsg('⚙️ API не настроен. Добавьте OPENROUTER_API_KEY в .env', false);
+            }
+        } catch (e) {
+            this.statusDot.className = 'status-dot error';
+            this.input.disabled = true;
+            this.sendBtn.disabled = true;
+        }
+    }
+
+    async send() {
+        const text = this.input.value.trim();
+        if (!text || this.isTyping) return;
+
+        this.addMsg(text, true);
+        this.input.value = '';
+        this.showTyping();
+        this.isTyping = true;
+
+        try {
+            const res = await fetch('/api/support/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text, history: this.history.slice(-6) })
+            });
+
+            const data = await res.json();
+            this.hideTyping();
+
+            if (data.status === 'success') {
+                this.addMsg(data.response, false);
+                this.history.push(
+                    { role: 'user', content: text },
+                    { role: 'assistant', content: data.response }
+                );
+            } else {
+                this.addMsg('Ошибка: ' + (data.error || 'Неизвестно'), false);
+            }
+        } catch (e) {
+            this.hideTyping();
+            this.addMsg('Ошибка соединения', false);
+        }
+
+        this.isTyping = false;
+    }
+
+    addMsg(text, isUser) {
+        const msg = document.createElement('div');
+        msg.className = `message ${isUser ? 'user' : 'assistant'}`;
+        msg.innerHTML = `${this.escape(text)}<span class="time">${this.getTime()}</span>`;
+        this.messagesDiv.appendChild(msg);
+        this.scrollBottom();
+    }
+
+    showTyping() {
+        this.typingDiv = document.createElement('div');
+        this.typingDiv.className = 'message assistant typing';
+        this.typingDiv.innerHTML = 'Печатает...';
+        this.messagesDiv.appendChild(this.typingDiv);
+        this.scrollBottom();
+    }
+
+    hideTyping() {
+        if (this.typingDiv) this.typingDiv.remove();
+    }
+
+    toggle() {
+        this.isMinimized = !this.isMinimized;
+        if (this.isMinimized) {
+            this.widget.classList.add('minimized');
+            this.minimizeBtn.textContent = '+';
+        } else {
+            this.widget.classList.remove('minimized');
+            this.minimizeBtn.textContent = '−';
+            setTimeout(() => this.scrollBottom(), 100);
+        }
+    }
+
+    scrollBottom() {
+        this.messagesDiv.scrollTop = this.messagesDiv.scrollHeight;
+    }
+
+    getTime() {
+        const d = new Date();
+        return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+    }
+
+    escape(str) {
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    window.chat = new SimpleChat();
 });
